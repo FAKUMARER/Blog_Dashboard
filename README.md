@@ -16,6 +16,7 @@
 6. [主题结构](#主题结构)
 7. [扩展指南](#扩展指南)
 8. [维护者须知](#维护者须知)
+9. [Bug Fixes](#bug-fixes)
 
 ---
 
@@ -591,6 +592,22 @@ Compress-Archive -Path dist\blog-admin-kit\* -DestinationPath dist\blog-admin-ki
 3. **加重试** —— `putFile` / `commitFiles` 网络失败时自动重试
 4. **加冲突处理** —— 上传前检查远程 sha 是否变了
 5. **PWA 化** —— 加 Service Worker，离线也能用
+
+---
+
+## Bug Fixes
+
+### 修复了零文章时博客首页无法打开的问题
+
+- **问题原因**：Hexo 的首页分页由 `hexo-generator-index` 调用 `hexo-pagination` 生成。零文章时页码总数是 `ceil(0 / per_page)`，结果为 0，分页循环一次都不执行，因此不会产出 `public/index.html`；`hexo-generator-archive` 也会在零文章时直接返回，所以 `/archives/` 同样 404。若所有文章都是未来日期（`future: false`）或全是草稿，Hexo 同样视为零文章。
+
+- **解决方案**：`buildHexoFiles()` 现在会向站点仓库写入 `scripts/empty-index.js`。该脚本在零文章时注册 `index.html` 和 `archives/index.html` 两个空态路由（`posts` 为空、`total: 1`），主题模板照常渲染，文章区域为空；有文章时直接 `return`，交给 Hexo 原生生成器，不会产生重复路由。
+
+- **更新方式**：打开后台 → 设置，重新点一次「安装博客园风格主题」（或「初始化 Hexo 站点」），把 `scripts/empty-index.js` 提交到博客仓库，然后等待 GitHub Actions 构建完成。零文章时访问站点根路径即可正常显示首页。
+
+- **影响范围**：首页 `/` 和归档页 `/archives/` 恢复可访问；分类页 `/categories/`、标签页 `/tags/` 由静态页面生成，不受影响；有文章时行为不变。
+
+- **其他**：后台资源版本号已从 `v=70` 提升到 `v=71`，刷新后台即可加载新脚本。涉及文件：`admin/app.js`、`admin/index.html`。
 
 ---
 
