@@ -411,6 +411,8 @@ window.CNBLOG_THEME = {
 | 连接测试 | `testConnection()` |
 | 站点初始化 | `initHexoSite()`、`buildHexoFiles()` |
 | 主题安装 | `installCnblogTheme()` |
+| 评论配置 | `loadCommentSettings()`、`saveCommentSettings()`、`readCommentSettings()`、`writeTopLevelBlock()` |
+| 浏览量配置 | `loadViewSettings()`、`saveViewSettings()`、`readViewSettings()`、`readBlockValues()` |
 | 定时构建 | `installScheduledWorkflow()` |
 | 批量改分类 | `batchMoveCategory()`、`insertCategoryPrefix()` |
 | 外链迁移 | `migrateAllPostsImages()`、`findExternalRefs()` |
@@ -439,20 +441,24 @@ window.CNBLOG_THEME = {
 `themes/cnblog/`：
 
 ```
-layout/
-  layout.ejs            # 主框架（含 assetV 版本号定义）
-  _partial/
-    head.ejs            # <head>，用 typeof assetV 判断
-    sidebar.ejs         # 侧栏：profile / 统计 / 分类 / 标签 / 最新文章 / 目录 / 同分类合集
-    ...
-  index.ejs             # 首页（文章卡片列表）
-  post.ejs              # 文章页
-  archive.ejs           # 归档 / 分类 / 标签共用（分页 + 年份分组 + 摘要）
-  category.ejs          # 分类索引页
-  tag.ejs               # 标签索引页
-source/
-  css/style.css         # 全部样式（~29KB）
-  img/banner.webp       # 首页 banner
+themes/cnblog/
+  _config.yml           # 主题配置（作者 / 头像 / 简介 / 格言 / 菜单 / 侧栏组件）
+                        # 注意：装主题时会被整份覆盖，别把站点专属的 ID 放这里
+  layout/
+    layout.ejs          # 主框架（含 assetV 版本号定义）
+    _partial/
+      head.ejs          # <head>，用 typeof assetV 判断
+      sidebar.ejs       # 侧栏：profile / 统计 / 分类 / 标签 / 最新文章 / 目录 / 同分类合集
+      ...
+    index.ejs           # 首页（文章卡片列表）
+    post.ejs            # 文章页（末尾挂 giscus 评论区）
+    archive.ejs         # 归档 / 分类 / 标签共用（分页 + 年份分组 + 摘要）
+    category.ejs        # 分类索引页
+    tag.ejs             # 标签索引页
+  source/
+    css/style.css       # 全部样式（含评论区，~30KB）
+    js/main.js          # 深浅色、目录高亮、giscus 挂载与主题同步
+    images/banner.webp  # 首页 banner
 scripts/                # 主题自带脚本（会被复制到站点）
 ```
 
@@ -461,7 +467,66 @@ scripts/                # 主题自带脚本（会被复制到站点）
 - `archive.ejs` 里分类页按 `order` / `source` 排序（不是日期），这是为了和后台文件顺序一致
 - `sidebar.ejs` 的同分类合集用 `catData.posts.toArray().sort(...)`
 - `post.ejs` 在 `page.password` 时渲染 `.post-abstract`（加密文章的摘要）
-- CSS 用 `:root` 变量 + `[data-theme="dark"]` 支持深浅色
+- `post.ejs` 末尾是 giscus 评论区（`config.comments` 打开且 ID 齐全才渲染，加密文章不渲染）
+- CSS 用 `:root` 变量 + `body.dark` 支持深浅色
+
+### 评论（giscus）
+
+评论用的是 [giscus](https://github.com/giscus/giscus)：数据存在仓库的 GitHub Discussions 里，纯前端 iframe，不需要任何服务器。
+
+```
+文章页 HTML（post.ejs）
+  └─ <section class="post-comments" data-repo data-repo-id data-category-id ...>
+       └─ <div class="giscus"></div>        ← giscus 把 iframe 塞进这里
+
+/js/main.js
+  └─ mountGiscus()   读 data-* → 动态插 <script src="https://giscus.app/client.js">
+                     主题 auto 时按本站 body.dark 传 light / dark
+  └─ syncGiscusTheme() 切深浅色时 postMessage 让 iframe 跟着换主题
+```
+
+**关键约定**：
+
+- 配置写在**站点根目录** `_config.yml` 的 `comments` 段，不写在主题配置里。
+  `安装博客园主题` 会整份覆盖 `themes/cnblog/_config.yml`，放那里的话 repoId 每装一次就没了。
+- `enable: true` 且 `repo` / `repoId` / `categoryId` 都不为空才渲染，
+  免得没配置时也去请求 giscus.app。
+- `theme: auto` 表示跟随本站深浅色开关（本站默认跟随系统），也可以填
+  `light` / `dark` / `dark_dimmed` / `preferred_color_scheme` 等 giscus 主题名。
+- 加密文章（front-matter 有 `password`）不挂评论区：讨论会泄露标题和摘要。
+- 单篇关评论：front-matter 写 `comments: false`。
+- 后台「设置 → 评论（giscus）」用 `writeTopLevelBlock()` 只替换 `comments` 段，
+  站点配置其余内容和注释原样保留；重复保存不会产生 diff。
+
+### 浏览量（GoatCounter）
+
+每篇文章的阅读数用 [GoatCounter](https://www.goatcounter.com)：无 Cookie、免费（非商业），计数存在它那边，页面只读一个 JSON。
+
+```
+layout.ejs
+  └─ views.enable 时注入 <script data-goatcounter="https://<code>.goatcounter.com/count">
+post.ejs
+  └─ <span class="post-views" data-code data-label hidden>
+main.js
+  └─ fetch https://<code>.goatcounter.com/counter/<encodeURIComponent(pathname)>.json
+     → { count: "1,234" } → 填「阅读 1,234」；失败保持隐藏
+```
+
+**关键约定**：
+
+- 配置同样写在站点 `_config.yml` 的 `views` 段（不跟主题配置走，重装主题不会丢）：
+  ```yaml
+  views:
+    enable: true
+    code: yourcode   # GoatCounter 站点代码，即 https://yourcode.goatcounter.com
+    label: 阅读
+  ```
+- `path` 固定用 `location.pathname`（同时写进 `window.goatcounter.path`），避免 `?giscus=` 这类查询串把同一篇文章拆成多个路径。
+- 计数展示依赖 GoatCounter 站点设置里的 **Allow adding visitor counts on your website**（默认关闭）；
+  没开时接口返回 404，页面保持隐藏，不影响正文。
+- 计数接口缓存最多 4 小时；后台统计约 10 秒后可见。
+- 广告拦截器可能拦 `gc.zgo.at`：被拦时只是不显示数字，不影响页面。
+
 
 ---
 
@@ -531,6 +596,9 @@ await gh(`/repos/${owner}/${repo}/contents/${path}`, {
 | **`state.diff` 会被重算覆盖** | 手动 `set` 之后不能再调 `refreshDiffFromState()` |
 | **`renderTreeNode` 里写死排序** | 曾经按文件名排，导致拖拽调序无效 |
 | **`buildFrontMatter` 要求数组** | `categories`/`tags` 必须是数组，`toList()` 兜底 |
+| **GitHub API 响应有 60 秒缓存** | 读到的 sha 可能是旧的，拿去写文件就是 409「文件冲突」。`gh()` 统一 `cache: 'no-store'`，评论设置保存还会自动重读重试 |
+| **主题包路径必须带前缀** | 包里的键就是提交路径（`themes/cnblog/layout/post.ejs`）。生成脚本的基准目录若写成 `themes/cnblog`，键会变成 `layout/post.ejs`，装主题时会写到仓库根目录、把站点 `_config.yml` 覆盖成主题配置。生成器已改用仓库根作基准，`installCnblogTheme` 也会拒绝无前缀的包 |
+| **构建成功但页面全 404** | `package.json` 缺 `markdown-it-task-lists` 时 `hexo-renderer-markdown-it` 加载失败，Hexo 只复制静态资源、不生成任何 HTML，Actions 却仍显示成功。装主题时会自动把缺失依赖补进 `package.json` |
 
 ### 测试
 
@@ -550,7 +618,7 @@ node e2e.mjs
 
 `admin/index.html` 里的 `?v=N` 用来破缓存。**每次改 `app.js` / `style.css` / `theme-cnblog.js` 都要递增**。
 
-当前：`v=65`。
+当前：`v=78`。
 
 ### 打包
 

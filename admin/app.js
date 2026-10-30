@@ -229,6 +229,9 @@ async function gh(path, { method = 'GET', body } = {}) {
   try {
     res = await fetch(url, {
       method,
+      // GitHub 的 API 响应带 max-age=60，浏览器的 HTTP 缓存会返回旧 sha，
+      // 拿它去写文件就是 409「文件冲突」。所有请求都别走缓存。
+      cache: 'no-store',
       headers: {
         Accept: 'application/vnd.github+json',
         Authorization: `Bearer ${s.token}`,
@@ -3743,6 +3746,31 @@ encrypt:
   kdf:
     iterations: 600000
 
+# 评论（giscus）：数据存在本仓库的 GitHub Discussions，不需要服务器。
+# 在后台「设置 → 评论」里填仓库和分类 ID（ID 去 https://giscus.app 生成），
+# 或直接改这里的值。enable 打开、ID 填齐后文章页才会渲染评论区。
+comments:
+  enable: false
+  giscus:
+    repo: '${author}/${s.repo}'
+    repoId: ''
+    category: ''
+    categoryId: ''
+    mapping: pathname
+    strict: 0
+    reactionsEnabled: 1
+    emitMetadata: 0
+    inputPosition: top
+    lang: zh-CN
+    theme: auto
+    loading: lazy
+
+# 浏览量（GoatCounter）：免费、无 Cookie，需要在 goatcounter.com 建站点。
+views:
+  enable: false
+  code: ''
+  label: 阅读
+
 default_category: uncategorized
 category_map:
 tag_map:
@@ -4565,6 +4593,241 @@ async function downloadMottoFile() {
     result.className = 'conn-result bad';
   }
 }
+/* ============================================================
+ *  评论（giscus）
+ *  配置写在站点根目录 _config.yml 的 comments 段：
+ *  主题安装会整份覆盖 themes/cnblog/_config.yml，放主题里 repoId 会被冲掉。
+ * ============================================================ */
+const COMMENT_DEFAULTS = {
+  enable: false,
+  repo: '',
+  repoId: '',
+  category: '',
+  categoryId: '',
+  mapping: 'pathname',
+  strict: 0,
+  reactionsEnabled: 1,
+  emitMetadata: 0,
+  inputPosition: 'top',
+  lang: 'zh-CN',
+  theme: 'auto',
+  loading: 'lazy',
+};
+
+/** 找 _config.yml 里顶层键 key 的起止行号（块尾的空行不算在块里） */
+function findTopLevelBlock(lines, key) {
+  const keyLine = lines.findIndex((line) => line.startsWith(`${key}:`));
+  if (keyLine < 0) return null;
+
+  // 生成的段前面自带几行 "# ..." 说明。不把它们算进范围的话，
+  // 每次保存都会在 comments: 上方再插一份说明，越存越长。
+  let start = keyLine;
+  while (start > 0 && lines[start - 1].startsWith('#')) start -= 1;
+
+  let end = keyLine + 1;
+  while (end < lines.length) {
+    const line = lines[end];
+    if (line.trim() === '' || /^\s/.test(line)) { end += 1; continue; }
+    break; // 遇到下一个顶层键
+  }
+  while (end > start + 1 && lines[end - 1].trim() === '') end -= 1;
+  return { start, end };
+}
+
+/** 去掉 YAML 标量的引号和行尾注释 */
+function unquoteYaml(raw) {
+  let v = String(raw == null ? '' : raw).trim();
+  if (!v) return '';
+  if (!/^(['"]).*\1$/.test(v)) v = v.replace(/\s+#.*$/, '');
+  if (/^'.*'$/.test(v)) return v.slice(1, -1).replace(/''/g, "'");
+  if (/^".*"$/.test(v)) return v.slice(1, -1).replace(/\\"/g, '"').replace(/\\\\/g, '\\');
+  return v;
+}
+
+/** 从站点 _config.yml 读评论配置（没有 comments 段就用默认值） */
+function readCommentSettings(text) {
+  const cfg = { ...COMMENT_DEFAULTS };
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const range = findTopLevelBlock(lines, 'comments');
+  if (!range) return cfg;
+
+  const block = lines.slice(range.start, range.end);
+  const pick = (key) => {
+    const re = new RegExp(`^\\s+${key}:\\s*(.*)$`);
+    for (const line of block) {
+      const m = re.exec(line);
+      if (m) return unquoteYaml(m[1]);
+    }
+    return '';
+  };
+  const isOn = (v) => v === 'true' || v === '1';
+
+  cfg.enable = isOn(pick('enable'));
+  for (const key of ['repo', 'repoId', 'category', 'categoryId', 'mapping',
+    'inputPosition', 'lang', 'theme', 'loading']) {
+    const v = pick(key);
+    if (v) cfg[key] = v;
+  }
+  cfg.strict = isOn(pick('strict')) ? 1 : 0;
+  cfg.reactionsEnabled = isOn(pick('reactionsEnabled')) ? 1 : 0;
+  cfg.emitMetadata = isOn(pick('emitMetadata')) ? 1 : 0;
+  return cfg;
+}
+
+/** 生成 comments 段（固定写法，方便下次按行解析） */
+function buildCommentBlock(c) {
+  const q = (v) => `'${String(v == null ? '' : v).replace(/'/g, "''")}'`;
+  const num = (v) => (v ? '1' : '0');
+  return [
+    '# ==================== 评论（giscus） ====================',
+    '# 评论存在本仓库的 GitHub Discussions 里，不需要任何服务器，也不会有广告和追踪。',
+    '# enable 打开、且 repo / repoId / categoryId 都填了，文章页才会渲染评论区。',
+    '# 这几个 ID 在 https://giscus.app 选好仓库和分类后自动生成。',
+    'comments:',
+    `  enable: ${c.enable ? 'true' : 'false'}`,
+    '  giscus:',
+    `    repo: ${q(c.repo)}`,
+    `    repoId: ${q(c.repoId)}`,
+    `    category: ${q(c.category)}`,
+    `    categoryId: ${q(c.categoryId)}`,
+    `    mapping: ${q(c.mapping)}`,
+    `    strict: ${num(c.strict)}`,
+    `    reactionsEnabled: ${num(c.reactionsEnabled)}`,
+    `    emitMetadata: ${num(c.emitMetadata)}`,
+    `    inputPosition: ${q(c.inputPosition)}`,
+    `    lang: ${q(c.lang)}`,
+    `    theme: ${q(c.theme)}`,
+    `    loading: ${q(c.loading)}`,
+  ].join('\n');
+}
+
+/** 替换（或追加）站点 _config.yml 的某个顶层段，其余内容原样保留 */
+function writeTopLevelBlock(text, key, block) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const blockLines = block.split('\n');
+  const range = findTopLevelBlock(lines, key);
+
+  if (range) {
+    lines.splice(range.start, range.end - range.start, ...blockLines);
+  } else {
+    // 追加前先去掉文件末尾的空行，避免和下面的分隔空行叠成两行
+    while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+    lines.push('', ...blockLines);
+  }
+
+  // 统一成「以单个换行结尾」：否则下次保存会多出一行空行，
+  // 内容明明没改却被判成有改动，白白多一次提交。
+  while (lines.length && lines[lines.length - 1].trim() === '') lines.pop();
+  return `${lines.join('\n')}\n`;
+}
+
+/** 把仓库里的评论配置填进设置面板 */
+async function loadCommentSettings() {
+  if (!settingsReady()) return;
+  try {
+    const { text } = await getFile('_config.yml');
+    const cfg = readCommentSettings(text);
+    if (!cfg.repo && state.settings.owner && state.settings.repo) {
+      cfg.repo = `${state.settings.owner}/${state.settings.repo}`;
+    }
+
+    $('#fCommentEnable').checked = cfg.enable;
+    $('#fCommentRepo').value = cfg.repo;
+    $('#fCommentRepoId').value = cfg.repoId;
+    $('#fCommentCategory').value = cfg.category;
+    $('#fCommentCategoryId').value = cfg.categoryId;
+    $('#fCommentMapping').value = cfg.mapping;
+    $('#fCommentInputPosition').value = cfg.inputPosition;
+    $('#fCommentLang').value = cfg.lang;
+
+    // 手改过的值（比如 gruvbox / pt）不在下拉选项里，补一个再选中
+    const setSelect = (sel, value) => {
+      if (![...sel.options].some((o) => o.value === value)) sel.add(new Option(value, value));
+      sel.value = value;
+    };
+    setSelect($('#fCommentTheme'), cfg.theme);
+    setSelect($('#fCommentLang'), cfg.lang);
+    $('#fCommentReactions').checked = !!cfg.reactionsEnabled;
+  } catch { /* 站点还没初始化，忽略 */ }
+}
+
+/** 校验并写回站点 _config.yml */
+async function saveCommentSettings() {
+  if (!settingsReady()) { toast('请先配置仓库', true); return; }
+
+  const btn = $('#btnSaveComments');
+  const result = $('#commentResult');
+  btn.disabled = true;
+
+  try {
+    const enable = $('#fCommentEnable').checked;
+    const repo = $('#fCommentRepo').value.trim();
+    const repoId = $('#fCommentRepoId').value.trim();
+    const category = $('#fCommentCategory').value.trim();
+    const categoryId = $('#fCommentCategoryId').value.trim();
+
+    if (repo && !/^[^/\s]+\/[^/\s]+$/.test(repo)) {
+      throw new Error('仓库要写成 owner/repo');
+    }
+    if (enable && (!repo || !repoId || !categoryId)) {
+      throw new Error('启用评论前，仓库、repoId、categoryId 都要填');
+    }
+
+    const path = '_config.yml';
+    const fixed = {
+      enable, repo, repoId, category, categoryId,
+      mapping: $('#fCommentMapping').value,
+      inputPosition: $('#fCommentInputPosition').value,
+      lang: $('#fCommentLang').value.trim() || 'zh-CN',
+      theme: $('#fCommentTheme').value,
+      reactionsEnabled: $('#fCommentReactions').checked ? 1 : 0,
+    };
+
+    // 409 = 手里的 sha 过期了：别的提交刚改过这个文件，或者读文件时命中了
+    // GitHub API 的 60 秒响应缓存。重新读一遍再写，最多试 3 次。
+    let saved = false;
+    for (let attempt = 1; attempt <= 3 && !saved; attempt += 1) {
+      const { text, sha } = await getFile(path);
+      const prev = readCommentSettings(text);
+      const next = writeTopLevelBlock(text, 'comments', buildCommentBlock({
+        ...fixed,
+        // 面板没暴露的三项沿用文件里的值，别把它们悄悄重置
+        strict: prev.strict,
+        emitMetadata: prev.emitMetadata,
+        loading: prev.loading,
+      }));
+
+      if (next === text) {
+        result.textContent = '设置没有变化';
+        result.className = 'conn-result';
+        return;
+      }
+
+      try {
+        await putFile(path, next, 'config: 更新 giscus 评论设置', sha);
+        saved = true;
+      } catch (e) {
+        if (e.status !== 409) throw e;
+        if (attempt === 3) {
+          throw new Error('文件刚被其他提交改过，重试 3 次仍然冲突，请刷新页面后再保存');
+        }
+      }
+    }
+
+    result.textContent = enable
+      ? '已保存。构建完成后文章页底部出现评论区；第一条评论会自动在 Discussions 里建帖。'
+      : '已保存。评论已关闭，文章页不再加载 giscus。';
+    result.className = 'conn-result ok';
+    toast('评论设置已提交');
+  } catch (e) {
+    result.textContent = `保存失败：${e.message}`;
+    result.className = 'conn-result bad';
+    toast(`保存失败：${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 /** 预设诗句库，安装主题时写入 source/motto.txt（一行一句，格式：句子 —— 出处） */
 const MOTTO_PRESET = `星垂平野阔，月涌大江流。 —— 《旅夜书怀》· 唐代 · 杜甫
 长风破浪会有时，直挂云帆济沧海。 —— 《行路难·其一》· 唐代 · 李白
@@ -4677,6 +4940,119 @@ const MOTTO_PRESET = `星垂平野阔，月涌大江流。 —— 《旅夜书�
 化作春泥更护花。 —— 《己亥杂诗》· 清代 · 龚自珍
 `;
 
+/* ============================================================
+ *  浏览量（GoatCounter）
+ *  配置同样写站点 _config.yml（views 段），不跟主题配置走。
+ * ============================================================ */
+const VIEW_DEFAULTS = { enable: false, code: '', label: '阅读' };
+
+/** 读某个顶层段里的扁平标量（一行一个 key: value） */
+function readBlockValues(text, key) {
+  const lines = String(text || '').replace(/\r\n/g, '\n').split('\n');
+  const range = findTopLevelBlock(lines, key);
+  if (!range) return null;
+
+  const out = {};
+  for (const line of lines.slice(range.start, range.end)) {
+    const m = /^\s{1,4}([A-Za-z][\w]*):\s*(.*)$/.exec(line);
+    if (m) out[m[1]] = unquoteYaml(m[2]);
+  }
+  return out;
+}
+
+/** 从站点 _config.yml 读浏览量配置 */
+function readViewSettings(text) {
+  const cfg = { ...VIEW_DEFAULTS };
+  const vals = readBlockValues(text, 'views');
+  if (!vals) return cfg;
+
+  cfg.enable = vals.enable === 'true' || vals.enable === '1';
+  if (vals.code) cfg.code = vals.code;
+  if (vals.label) cfg.label = vals.label;
+  return cfg;
+}
+
+/** 生成 views 段 */
+function buildViewBlock(c) {
+  const q = (v) => `'${String(v == null ? '' : v).replace(/'/g, "''")}'`;
+  return [
+    '# ==================== 浏览量（GoatCounter） ====================',
+    '# 免费、无 Cookie 的访客统计，需要在 https://www.goatcounter.com 建一个站点，',
+    '# 并在站点 Settings 里打开 “Allow adding visitor counts on your website”。',
+    'views:',
+    `  enable: ${c.enable ? 'true' : 'false'}`,
+    `  code: ${q(c.code)}`,
+    `  label: ${q(c.label)}`,
+  ].join('\n');
+}
+
+/** 把仓库里的浏览量配置填进设置面板 */
+async function loadViewSettings() {
+  if (!settingsReady()) return;
+  try {
+    const { text } = await getFile('_config.yml');
+    const cfg = readViewSettings(text);
+    $('#fViewEnable').checked = cfg.enable;
+    $('#fViewCode').value = cfg.code;
+    $('#fViewLabel').value = cfg.label;
+  } catch { /* 站点还没初始化，忽略 */ }
+}
+
+/** 校验并写回站点 _config.yml */
+async function saveViewSettings() {
+  if (!settingsReady()) { toast('请先配置仓库', true); return; }
+
+  const btn = $('#btnSaveViews');
+  const result = $('#viewResult');
+  btn.disabled = true;
+
+  try {
+    const enable = $('#fViewEnable').checked;
+    const code = $('#fViewCode').value.trim().toLowerCase();
+    const label = $('#fViewLabel').value.trim() || '阅读';
+
+    if (enable && !code) throw new Error('启用浏览量前要填站点代码');
+    if (code && !/^[a-z0-9][a-z0-9-]*$/.test(code)) {
+      throw new Error('站点代码只能用小写字母、数字和连字符（如 yourcode）');
+    }
+
+    const path = '_config.yml';
+    let saved = false;
+
+    // 和评论设置一样：409 说明 sha 过期，重新读再写，最多 3 次
+    for (let attempt = 1; attempt <= 3 && !saved; attempt += 1) {
+      const { text, sha } = await getFile(path);
+      const next = writeTopLevelBlock(text, 'views', buildViewBlock({ enable, code, label }));
+
+      if (next === text) {
+        result.textContent = '设置没有变化';
+        result.className = 'conn-result';
+        return;
+      }
+
+      try {
+        await putFile(path, next, 'config: 更新浏览量设置', sha);
+        saved = true;
+      } catch (e) {
+        if (e.status !== 409) throw e;
+        if (attempt === 3) throw new Error('文件刚被其他提交改过，重试 3 次仍然冲突，请刷新页面后再保存');
+      }
+    }
+
+    result.textContent = enable
+      ? '已保存。构建完成后文章页会出现「阅读 N」；GoatCounter 后台约 10 秒后能看到这次访问。'
+      : '已保存。浏览量已关闭，主题不再加载统计脚本。';
+    result.className = 'conn-result ok';
+    toast('浏览量设置已提交');
+  } catch (e) {
+    result.textContent = `保存失败：${e.message}`;
+    result.className = 'conn-result bad';
+    toast(`保存失败：${e.message}`, true);
+  } finally {
+    btn.disabled = false;
+  }
+}
+
 async function installCnblogTheme() {
   if (!settingsReady()) { toast('请先填写仓库信息和 Token', true); return; }
 
@@ -4685,6 +5061,17 @@ async function installCnblogTheme() {
 
   const textFiles = pack.files || pack;
   const assets = pack.assets || {};
+
+  // 防呆：包里的键就是提交路径，必须带 themes/cnblog/ 前缀。
+  // 生成脚本曾把基准目录写成 themes/cnblog，键变成 layout/post.ejs，
+  // 装主题时直接写到仓库根目录，把站点 _config.yml 覆盖成了主题配置。
+  const badPackPath = [...Object.keys(textFiles), ...Object.keys(assets)]
+    .find((p) => !p.startsWith('themes/cnblog/'));
+  if (badPackPath) {
+    toast(`主题包路径异常（缺少 themes/cnblog/ 前缀）：${badPackPath}`, true);
+    setStatus('主题包路径异常，已中止，避免写坏仓库');
+    return;
+  }
 
   // 主题配置里带的是打包时的示例信息，装机时换成当前仓库主人，
   // 这样把后台分享出去，别人装出来是自己的站点而不是原作者的。
@@ -4708,13 +5095,40 @@ async function installCnblogTheme() {
     return;
   }
 
+  // 坏包事故会把站点 _config.yml 覆盖成主题配置（只有 mottoSource/banner，
+  // 没有 title/url/theme）。这种情况不能只替换 theme: 行，要整份恢复。
+  let restoredCfg = false;
+  if (!/^theme:/m.test(cfgText) && /^mottoSource:/m.test(cfgText)) {
+    const skeletonCfg = buildHexoFiles().find((f) => f.path === '_config.yml');
+    if (skeletonCfg) {
+      cfgText = skeletonCfg.content;
+      restoredCfg = true;
+    }
+  }
+
   const nextCfg = /^theme:/m.test(cfgText)
     ? cfgText.replace(/^theme:.*$/m, 'theme: cnblog')
     : `${cfgText.replace(/\s*$/, '')}\ntheme: cnblog\n`;
 
+  // 上次坏包留下的根目录副本。只清理 layout/ 和 source/css|js 下的文本文件，
+  // 而且要内容和主题包完全一致才删，避免误删用户自己的文件。
+  const strayPairs = Object.keys(textFiles)
+    .filter((p) => p.startsWith('themes/cnblog/'))
+    .map((p) => ({ packPath: p, strayPath: p.slice('themes/cnblog/'.length) }))
+    .filter(({ strayPath }) => /^(layout\/|source\/(css|js)\/)/.test(strayPath));
+
+  let hasStray = false;
+  try { await getFile('layout/post.ejs'); hasStray = true; } catch { /* 正常，没有副本 */ }
+
+  const notes = [];
+  if (restoredCfg) notes.push('站点 _config.yml 被写成了主题配置，会一并恢复');
+  if (hasStray) notes.push('检测到上次误写到根目录的主题副本，会一并清理');
+
   if (!confirm(
     `将提交 ${allPaths.length} 个主题文件（含字体与 banner 图片）到 themes/cnblog/，`
-    + '并创建分类、标签索引页，最后把站点主题切换为 cnblog。\n\n继续吗？'
+    + '并创建分类、标签索引页，最后把站点主题切换为 cnblog。'
+    + (notes.length ? `\n\n另外：${notes.join('；')}。` : '')
+    + '\n\n继续吗？'
   )) return;
 
   const btn = $('#btnInstallTheme');
@@ -4731,6 +5145,28 @@ async function installCnblogTheme() {
     const skeleton = buildHexoFiles();
     const injectScript = skeleton.find((f) => f.path === 'scripts/inject-katex.js');
     if (injectScript) changes.push({ path: injectScript.path, content: injectScript.content });
+
+    // package.json 可能缺依赖：_config.yml 的 markdown.plugins 里列了
+    // markdown-it-task-lists，但 package.json 没装它时 hexo-renderer-markdown-it
+    // 加载失败，Hexo 只复制静态资源、不生成任何页面——构建还显示成功，线上全是 404。
+    let depsFixed = false;
+    const skeletonPkg = skeleton.find((f) => f.path === 'package.json');
+    if (skeletonPkg) {
+      try {
+        const curPkg = JSON.parse((await getFile('package.json')).text);
+        const wantDeps = JSON.parse(skeletonPkg.content).dependencies || {};
+        curPkg.dependencies = curPkg.dependencies || {};
+        for (const [name, ver] of Object.entries(wantDeps)) {
+          if (!curPkg.dependencies[name]) {
+            curPkg.dependencies[name] = ver;
+            depsFixed = true;
+          }
+        }
+        if (depsFixed) {
+          changes.push({ path: 'package.json', content: `${JSON.stringify(curPkg, null, 2)}\n` });
+        }
+      } catch { /* 没有 package.json 或内容不合法，交给「初始化」处理 */ }
+    }
 
     if (nextCfg !== cfgText) changes.push({ path: siteCfg, content: nextCfg });
 
@@ -4756,9 +5192,28 @@ async function installCnblogTheme() {
     try { await getFile('source/motto.txt'); hasMotto = true; } catch { /* 不存在 */ }
     if (!hasMotto) changes.push({ path: 'source/motto.txt', content: MOTTO_PRESET });
 
+    // 自愈：删掉坏包写到根目录的副本（内容必须和主题包完全一样才删）
+    // 读回来的文本会被 TextDecoder 吃掉 BOM，比较前两边都剥掉
+    const noBom = (s) => String(s == null ? '' : s).replace(/^\uFEFF/, '');
+    const cleaned = [];
+    for (const { packPath, strayPath } of strayPairs) {
+      try {
+        const cur = await getFile(strayPath);
+        if (noBom(cur.text) === noBom(textFiles[packPath])) {
+          changes.push({ path: strayPath, sha: null });
+          cleaned.push(strayPath);
+        }
+      } catch { /* 不存在，跳过 */ }
+    }
+
     await commitFiles(changes, 'feat: 安装博客园风格主题', '安装主题');
+
+    const done = [];
+    if (restoredCfg) done.push('已恢复站点 _config.yml');
+    if (cleaned.length) done.push(`已清理 ${cleaned.length} 个误写文件`);
+    if (depsFixed) done.push('已补全 package.json 依赖');
     toast('主题已安装，Actions 构建完成后生效');
-    setStatus(`已提交 ${changes.length} 个文件，主题切换为 cnblog`);
+    setStatus(`已提交 ${changes.length} 个文件，主题切换为 cnblog${done.length ? '；' + done.join('，') : ''}`);
   } catch (e) {
     toast(`安装失败：${e.message}`, true);
     setStatus(`安装失败：${e.message}`);
@@ -4818,8 +5273,14 @@ function openSettings() {
   $('#connResult').className = 'conn-result';
   $('#mottoResult').textContent = '';
   $('#mottoResult').className = 'conn-result';
+  $('#commentResult').textContent = '';
+  $('#commentResult').className = 'conn-result';
+  $('#viewResult').textContent = '';
+  $('#viewResult').className = 'conn-result';
   $('#settingsDialog').showModal();
   loadMottoSettings();
+  loadCommentSettings();
+  loadViewSettings();
 }
 
 /** 用表单里当前填的值探测一次仓库，把结果直接显示在对话框里 */
@@ -4932,6 +5393,8 @@ function bindEvents() {
   $('#btnInstallWorkflow').addEventListener('click', installScheduledWorkflow);
   $('#btnInstallTheme').addEventListener('click', installCnblogTheme);
   $('#btnSaveMotto').addEventListener('click', saveMottoSettings);
+  $('#btnSaveComments').addEventListener('click', saveCommentSettings);
+  $('#btnSaveViews').addEventListener('click', saveViewSettings);
   $('#fMottoSource').addEventListener('change', toggleMottoRows);
   $('#btnDownloadMotto').addEventListener('click', downloadMottoFile);
   $('#fMottoFile').addEventListener('change', (e) => {
@@ -5146,6 +5609,14 @@ window.__blog = {
   downloadMottoFile,
   toggleMottoRows,
   saveMottoSettings,
+  loadCommentSettings,
+  saveCommentSettings,
+  loadViewSettings,
+  saveViewSettings,
+  readViewSettings,
+  readCommentSettings,
+  buildCommentBlock,
+  writeTopLevelBlock,
   refreshActionStatus,
   describeRun,
   renderActionBadge,

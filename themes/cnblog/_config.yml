@@ -98,8 +98,5 @@ footer:
   since: 2026
   copyright: FAKUMARER
 
-# 评论与阅读量：暂不启用（需要先部署 Waline 等服务）
-# 启用后会在文章页渲染 <div id="comments"></div>
-comments:
-  enable: false
-  serverURL: ''
+# 评论：配置不在主题里，在站点根目录 _config.yml 的 comments 段（后台「设置 → 评论」）。
+# 主题安装会整份覆盖本文件，放这里的话 repoId 每次都要重填。
