@@ -3616,6 +3616,7 @@ const HEXO_FILES = [
   '_config.yml',
   '.github/workflows/deploy.yml',
   'scripts/inject-katex.js',
+  'scripts/empty-index.js',
   'scaffolds/post.md',
 ];
 
@@ -3894,6 +3895,49 @@ hexo.extend.filter.register('after_render:html', function (str) {
 });
 `;
 
+  // 零文章兜底：hexo-generator-index 依赖的 hexo-pagination 会算出 0 页
+  // （total = ceil(0 / per_page)），归档生成器更是直接 return，
+  // 于是站点根路径没有 index.html、直接 404。
+  // 这里在零文章时补出空态首页和归档页，主题模板照常渲染，只是列表为空。
+  const emptyIndex = `'use strict';
+
+hexo.extend.generator.register('empty-index', function (locals) {
+  if (locals.posts.length) return;
+
+  const config = this.config;
+
+  function trimDir(value) {
+    let dir = String(value || '');
+    while (dir.charAt(0) === '/') dir = dir.slice(1);
+    while (dir.slice(-1) === '/') dir = dir.slice(0, -1);
+    return dir;
+  }
+
+  const indexPath = trimDir(config.index_generator && config.index_generator.path);
+  const archiveDir = trimDir(config.archive_dir || 'archives');
+  const baseData = {
+    posts: locals.posts,
+    current: 1,
+    total: 1,
+    prev: 0,
+    next: 0,
+  };
+
+  return [
+    {
+      path: (indexPath ? indexPath + '/' : '') + 'index.html',
+      layout: ['index'],
+      data: Object.assign({}, baseData, { __index: true }),
+    },
+    {
+      path: (archiveDir ? archiveDir + '/' : '') + 'index.html',
+      layout: ['archive'],
+      data: Object.assign({}, baseData),
+    },
+  ];
+});
+`;
+
   const scaffold = `---
 title: {{ title }}
 date: {{ date }}
@@ -3936,6 +3980,7 @@ $$
     { path: '_config.yml', content: config },
     { path: '.github/workflows/deploy.yml', content: deploy },
     { path: 'scripts/inject-katex.js', content: inject },
+    { path: 'scripts/empty-index.js', content: emptyIndex },
     { path: 'scaffolds/post.md', content: scaffold },
     // 示例文章只在不存在时创建，避免重复初始化覆盖用户改动
     { path: 'source/_posts/开始/hello-world.md', content: hello, createOnly: true },
@@ -4727,10 +4772,11 @@ async function installCnblogTheme() {
     for (const [p, b64] of Object.entries(assets)) changes.push({ path: p, base64: b64 });
 
     // scripts/ 在站点根目录，只由「初始化」生成；装主题时也一并更新，
-    // 否则 TOC 去重、图片 referrerpolicy 这些 filter 不会生效
+    // 否则 TOC 去重、图片 referrerpolicy、零文章首页兜底这些 filter / generator 不会生效
     const skeleton = buildHexoFiles();
-    const injectScript = skeleton.find((f) => f.path === 'scripts/inject-katex.js');
-    if (injectScript) changes.push({ path: injectScript.path, content: injectScript.content });
+    for (const f of skeleton.filter((f) => f.path.startsWith('scripts/'))) {
+      changes.push({ path: f.path, content: f.content });
+    }
 
     if (nextCfg !== cfgText) changes.push({ path: siteCfg, content: nextCfg });
 
