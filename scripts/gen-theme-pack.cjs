@@ -1,4 +1,4 @@
-﻿/**
+/**
  * 把 themes/cnblog/ 打包成 admin/theme-cnblog.js
  * 改了主题之后必须重新跑一次，否则后台「安装博客园主题」装的是旧版。
  *
@@ -35,7 +35,10 @@ if (!fs.existsSync(THEME_DIR)) {
   process.exit(1);
 }
 
-walk(THEME_DIR, THEME_DIR);
+// 基准目录必须是仓库根，不是 themes/cnblog：
+// 包里的键就是提交路径（themes/cnblog/layout/post.ejs），
+// 后台「安装主题」直接拿键当 path 用，少一层前缀就会写到仓库根目录。
+walk(THEME_DIR, ROOT);
 
 const banner = '// 由 scripts/gen-theme-pack.cjs 自动生成，请勿手改\n';
 fs.writeFileSync(

@@ -8,6 +8,15 @@
         <a class="meta-item meta-cat" href="<%- url_for(cat.path) %>"><%- cat.name %></a>
       <% }) %>
     <% } %>
+    <%
+      // 浏览量（GoatCounter）：数字由 /js/main.js 拉取后填进来，拉不到就不显示
+      var _vs = config.views || {};
+    %>
+    <% if (_vs.enable && _vs.code) { %>
+      <span class="meta-item post-views"
+        data-code="<%= _vs.code %>"
+        data-label="<%= _vs.label || '阅读' %>" hidden></span>
+    <% } %>
   </div>
 
   <div class="post-content">
@@ -45,10 +54,42 @@
     <% } %>
   </div>
 
-  <!--
-    评论区（预留）：
-    当前刻意不渲染，避免向不存在的服务发请求。
-    部署 Waline 后，在 themes/cnblog/_config.yml 里把 comments.enable 设为 true
-    并填上 serverURL，再把这里替换成评论容器即可（初始化代码见后台使用说明）。
-  -->
+  <%
+    /*
+     * 评论（giscus）：
+     * 配置写在**站点** _config.yml 的 comments 段，而不是主题配置——主题安装会整份
+     * 覆盖 themes/cnblog/_config.yml，repoId 那些手填的 ID 会被冲掉。
+     * 只有 enable 打开、且 repo / repoId / categoryId 都填了才渲染，
+     * 避免没配置时向 giscus.app 发一堆注定失败的请求。
+     * 加密文章（page.password）不挂评论区：讨论会泄露标题和摘要。
+     * 单篇想关评论，在 front-matter 写 comments: false。
+     */
+    var _cm = config.comments || {};
+    var _gc = _cm.giscus || {};
+    var _showComments = !!_cm.enable
+      && !!_gc.repo && !!_gc.repoId && !!_gc.categoryId
+      && page.comments !== false
+      && !page.password;
+  %>
+  <% if (_showComments) { %>
+    <section class="post-comments" id="comments"
+      data-repo="<%= _gc.repo %>"
+      data-repo-id="<%= _gc.repoId %>"
+      data-category="<%= _gc.category || '' %>"
+      data-category-id="<%= _gc.categoryId %>"
+      data-mapping="<%= _gc.mapping || 'pathname' %>"
+      data-strict="<%= _gc.strict != null ? _gc.strict : 0 %>"
+      data-reactions="<%= _gc.reactionsEnabled != null ? _gc.reactionsEnabled : 1 %>"
+      data-emit-metadata="<%= _gc.emitMetadata != null ? _gc.emitMetadata : 0 %>"
+      data-input-position="<%= _gc.inputPosition || 'top' %>"
+      data-theme="<%= _gc.theme || 'auto' %>"
+      data-lang="<%= _gc.lang || 'zh-CN' %>"
+      data-loading="<%= _gc.loading || 'lazy' %>">
+      <h2 class="comments-title">评论</h2>
+      <div class="giscus"></div>
+      <noscript>
+        <p class="comments-noscript">评论由 giscus 提供（数据存在 GitHub Discussions），需要开启 JavaScript 才能加载。</p>
+      </noscript>
+    </section>
+  <% } %>
 </article>

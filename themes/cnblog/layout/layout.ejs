@@ -19,5 +19,11 @@
 
   <%- partial('_partial/footer') %>
   <script src="<%- url_for('/js/main.js') %>?v=<%- assetV %>"></script>
+  <% if (config.views && config.views.enable && config.views.code) { %>
+  <%# 浏览量：GoatCounter 官方脚本。path 固定成 pathname，避免带 ?giscus= 之类的查询串 %>
+  <script>window.goatcounter = { path: location.pathname };</script>
+  <script data-goatcounter="https://<%= config.views.code %>.goatcounter.com/count"
+          async src="https://gc.zgo.at/count.js"></script>
+  <% } %>
 </body>
 </html>
